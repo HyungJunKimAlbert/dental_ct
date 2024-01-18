@@ -3,7 +3,6 @@
 ## Project Outline
     - Task : dental CBCT Multi-class Segmentation
     - Logging : tensorboard (2.14.0 version)
-    - 
 
 ## Dataset (*.nii)
     - Preprocessing Methods : RescaleSlope, RescaleInterupt
