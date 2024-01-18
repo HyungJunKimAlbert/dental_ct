@@ -12,7 +12,7 @@
     - Create DataFrame for reading Nii filepaths
     - Image dimension shape : (Batch, Channel, Height, Width)
         - input(Batch, 3, 512,512), mask(Batch, 32, 512, 512)
-            - Masking : 0 or 1 (Binary masking)
+        - Masking : 0 or 1 (Binary masking)
 
 ## Model Architecture
     - ResNet32 + UNet
