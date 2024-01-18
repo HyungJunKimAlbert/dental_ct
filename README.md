@@ -1,7 +1,7 @@
 # ResNet34 + U-Net Segmentation model
 
 ## Project Outline
-    - Task : dental CBCT Multi-class Segmentation
+    - Task : dental CBCT Multi-class Segmentation (32 channels)
     - Logging : tensorboard (2.14.0 version)
 
 ## Dataset (*.nii)
@@ -15,7 +15,7 @@
         - Masking : 0 or 1 (Binary masking)
 
 ## Model Architecture
-    - ResNet32 + UNet
+    - ResNet34 + UNet
 
 ## Train
     - Dataset
