@@ -16,10 +16,10 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter       # tensorboard --logdir="/home/hjkim/projects/dental_ct/log" --port=6009
 from sklearn.model_selection import train_test_split
 # Customized function
-from dataset import NiiDataset
-from utils import save, load, seed_fix, get_file_row_nii, to_numpy, denorm
-from model import UNet, UNetWithResNet18
-from metrics import DiceLoss, DiceBCELoss, IoULoss, cal_metrics
+from dataset.dataset import NiiDataset
+from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
+from models.model import UNet, UNetWithResNet18
+from losses.losses import DiceLoss, DiceBCELoss, IoULoss
 
 
 def set_args():
@@ -68,19 +68,19 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, writer_trai
         output = to_numpy(output)  
 
         # concat 32 channels data (label, output)
-        for i in range(32):
-            tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
-            tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
+        # for i in range(32):
+        #     tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
+        #     tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
 
-            if i == 0:
-                label_fn = tmp_label
-                output_fn = tmp_output
-            else:
-                label_fn = np.hstack((label_fn, tmp_label))
-                output_fn = np.hstack((output_fn, tmp_output))
+        #     if i == 0:
+        #         label_fn = tmp_label
+        #         output_fn = tmp_output
+        #     else:
+        #         label_fn = np.hstack((label_fn, tmp_label))
+        #         output_fn = np.hstack((output_fn, tmp_output))
 
         # F1-score , IoU score
-        f1_score, iou_score = cal_metrics(output_fn, label_fn, threshold=0.5)
+        f1_score, iou_score = cal_metrics(output, label, threshold=0.5)
         iou_arr += [iou_score.item()]     
         f1_arr += [f1_score.item()]
 
@@ -113,26 +113,14 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             label = to_numpy(label)   
             output = to_numpy(output)            
 
-            # concat 32 channels data (label, output)
-            for i in range(32):
-                tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
-                tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
-
-                if i == 0:
-                    label_fn = tmp_label
-                    output_fn = tmp_output
-                else:
-                    label_fn = np.hstack((label_fn, tmp_label))
-                    output_fn = np.hstack((output_fn, tmp_output))
-
             # F1-score , IoU score
-            f1_score, iou_score = cal_metrics(output_fn, label_fn)
+            f1_score, iou_score = cal_metrics(output, label)
             iou_arr += [iou_score.item()]     
             f1_arr += [f1_score.item()]
 
             writer_valid.add_image('input', input, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
+            writer_valid.add_image('label', label, batch_idx, dataformats='NHWC')
+            writer_valid.add_image('output', output, batch_idx, dataformats='NHWC')
 
         np.save(f"{result_dst_path}/input_{epoch+1}ep.npy" ,input)
         np.save(f"{result_dst_path}/label_{epoch+1}ep.npy" ,label)
@@ -185,20 +173,12 @@ def main():
 
     # model = UNet().to(device) # Customized UNET
 
-    # model = smp.Unet(
-    # encoder_name="resnet34",  
-    # encoder_weights="imagenet",
-    # in_channels=1,
-    # activation='softmax2d',
-    # classes=32).to(device)
-
-    model = smp.UnetPlusPlus(  
+    model = smp.Unet(     # UnetPlusPlus
     encoder_name="resnet34",  
     encoder_weights="imagenet",
     in_channels=1,
     activation='softmax2d',
     classes=32).to(device)
-
 
     criterion = nn.BCELoss()
     # criterion = nn.BCEWithLogitsLoss()
