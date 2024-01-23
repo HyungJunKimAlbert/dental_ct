@@ -11,6 +11,7 @@ from torchvision import transforms, datasets
 from sklearn.model_selection import train_test_split
 import segmentation_models_pytorch as smp
 import torch.optim as optim
+import albumentations as A
 
 # parser
 import argparse
