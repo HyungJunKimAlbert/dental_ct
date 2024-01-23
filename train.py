@@ -18,8 +18,8 @@ from sklearn.model_selection import train_test_split
 # Customized function
 from dataset.dataset import NiiDataset
 from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
-from models.model import UNet, UNetWithResNet18
-from losses.losses import DiceLoss, DiceBCELoss, IoULoss
+from models.model import UNet, AttentionUNet
+from losses.losses import DiceLoss, DiceBCELoss, IoULoss, FocalLoss
 
 
 def set_args():
@@ -51,14 +51,11 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, writer_trai
         input, label = data # Input: torch.Size([4, 1, 512, 512]), Label: torch.Size([4, 32, 512, 512])
         input, label = input.to(device), label.to(device)
 
-        output = model(input)
-        # print(f"Input: {input.shape}, Label: {label.shape}, Output: {output.shape}")
+        output = model(input)   # Output :torch.Size([4, 32, 512, 512]), Loss: torch.Size([4, 32])
         optimizer.zero_grad()
         
         loss = criterion(output, label) 
-        # print(f"Loss: {loss.mean()}")
-        # Output :torch.Size([4, 32, 512, 512]), Loss: torch.Size([4, 32])
-
+        
         loss_arr += [loss.item()] # Mean value (total 32 channels)
         loss.backward()
         optimizer.step()
@@ -66,18 +63,6 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, writer_trai
         input = to_numpy(input)         # Batch, Height, Weight, Channels
         label = to_numpy(label)   
         output = to_numpy(output)  
-
-        # concat 32 channels data (label, output)
-        # for i in range(32):
-        #     tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
-        #     tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
-
-        #     if i == 0:
-        #         label_fn = tmp_label
-        #         output_fn = tmp_output
-        #     else:
-        #         label_fn = np.hstack((label_fn, tmp_label))
-        #         output_fn = np.hstack((output_fn, tmp_output))
 
         # F1-score , IoU score
         f1_score, iou_score = cal_metrics(output, label, threshold=0.5)
@@ -113,18 +98,40 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             label = to_numpy(label)   
             output = to_numpy(output)            
 
+            # concat 32 channels data (label, output) ==> for tensorboard image (concat all images vertically)
+            # for i in range(32):
+            #     tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
+            #     tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
+
+            #     if i == 0:
+            #         label_fn = tmp_label
+            #         output_fn = tmp_output
+            #     else:
+            #         label_fn = np.hstack((label_fn, tmp_label))
+            #         output_fn = np.hstack((output_fn, tmp_output))
+
+            # output
+            output_fn = output.copy()
+            output_fn[output_fn<0.1] = 0
+            output_fn = output_fn.sum(axis=-1, keepdims=True)  # 32ch --> 3ch 
+            output_fn = np.concatenate([output_fn] * 3, axis=-1)
+            # label
+            label_fn = label.copy()
+            label_fn = label_fn.sum(axis=-1, keepdims=True)   # 32ch --> 3ch 
+            label_fn = np.concatenate([label_fn] * 3, axis=-1)
+
             # F1-score , IoU score
             f1_score, iou_score = cal_metrics(output, label)
             iou_arr += [iou_score.item()]     
             f1_arr += [f1_score.item()]
 
             writer_valid.add_image('input', input, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('label', label, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('output', output, batch_idx, dataformats='NHWC')
+            writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
+            writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
 
-        np.save(f"{result_dst_path}/input_{epoch+1}ep.npy" ,input)
-        np.save(f"{result_dst_path}/label_{epoch+1}ep.npy" ,label)
-        np.save(f"{result_dst_path}/output_{epoch+1}ep.npy", output)
+        np.save(f"{result_dst_path}/input_{epoch}ep.npy" ,input)
+        np.save(f"{result_dst_path}/label_{epoch}ep.npy" ,label)
+        np.save(f"{result_dst_path}/output_{epoch}ep.npy", output)
 
         avg_loss = np.mean(loss_arr)
         avg_iou = np.mean(iou_arr)
@@ -138,6 +145,8 @@ def main():
 # 0. Fix seed and Set args
     SEED=42
     IMAGE_SIZE = 256
+    early_stop_counter = 0 
+    early_stopping_epochs = 10
 
     seed_fix(SEED)
     args = set_args()
@@ -152,6 +161,8 @@ def main():
         transforms.Lambda(lambda x: (x - x.min()) / (x.max() - x.min()) if x.min() != x.max() else x),
         transforms.ToTensor(),
         transforms.Resize([IMAGE_SIZE, IMAGE_SIZE], interpolation=0),
+        # transforms.RandomRotation(10),
+        # transforms.RandomHorizontalFlip(),
     ]),
 
         'valid': transforms.Compose([
@@ -171,18 +182,19 @@ def main():
     BATCH_SIZE = args.batch_size
     NUM_EPOCHS = args.num_epoch
 
-    # model = UNet().to(device) # Customized UNET
+    model = AttentionUNet().to(device) # Customized UNET with attention (activation : Softmax 2d)
 
-    model = smp.Unet(     # UnetPlusPlus
-    encoder_name="resnet34",  
-    encoder_weights="imagenet",
-    in_channels=1,
-    activation='softmax2d',
-    classes=32).to(device)
+    # model = smp.Unet(     # UnetPlusPlus
+    # encoder_name="resnet34",  
+    # encoder_weights="imagenet",
+    # in_channels=1,
+    # activation='softmax2d',
+    # classes=32).to(device)
 
     criterion = nn.BCELoss()
-    # criterion = nn.BCEWithLogitsLoss()
+    # criterion = DiceLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10)
     mode = args.mode
     train_continue = args.train_continue
 
@@ -207,10 +219,6 @@ def main():
     valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=False)
     # test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    # train_df.to_csv('./trainset.csv')
-    # valid_df.to_csv('./validset.csv')
-    # test_df.to_csv('./testset.csv')
-
     if mode == 'train': # TRAIN MODE
         ST_EPOCH = 0
         if train_continue == "on": # load weights if you want to continue training
@@ -232,7 +240,9 @@ def main():
             avg_loss, avg_iou, avg_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device, writer_train)
             print('Validation Processing...')
             avg_loss_valid, avg_iou_valid, avg_f1_valid = valid_one_epoch(model, valid_loader, criterion, device, writer_valid, epoch, result_dir)
-
+            # Scheduler
+            scheduler.step(avg_iou_valid)       # IoU 향상 없을 시,
+            
             # train
             writer_train.add_scalar('loss', avg_loss, epoch)               # Loss (DICE)
             writer_train.add_scalar('IoU', avg_iou, epoch)                 # IoU
@@ -244,6 +254,18 @@ def main():
             writer_valid.add_scalar('F1_score', avg_f1_valid, epoch)       # F1 score
             print(f"EPOCH: {epoch}/{NUM_EPOCHS}, Train Loss: {avg_loss}, IoU: {avg_iou}, F1-score: {avg_f1} \n\tValid Loss: {avg_loss_valid}, IoU: {avg_iou_valid}, F1-score: {avg_f1_valid}")
         
+            # Early stopping
+            # if avg_f1_valid > global_f1:
+            #     early_stop_counter += 1
+            # else:
+            #     global_f1 = avg_f1_valid
+            #     early_stop_counter = 0
+
+            # if early_stop_counter >= early_stopping_epochs:
+            #     print("Early Stopping!")
+            #     save(ckpt_dir=ckpt_dir, model=model, optim=optimizer, epoch=epoch, iou=avg_iou_valid, f1=avg_f1_valid)
+            #     break
+
             # Save Model
             if global_f1 < avg_f1_valid:
                 global_f1 = avg_f1_valid
@@ -255,5 +277,7 @@ def main():
 
 if __name__ == '__main__':
 
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     main()
 
