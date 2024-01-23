@@ -45,31 +45,7 @@ def iou_numpy(outputs: np.array, labels: np.array):
     return thresholded  # Or thresholded.mean()
 
 
-
-
-
 # Criterion : https://www.kaggle.com/code/bigironsphere/loss-function-library-keras-pytorch#Dice-Loss
-
-# class DiceLoss(nn.Module):
-#     def __init__(self, weight=None, size_average=True):
-#         super(DiceLoss, self).__init__()
-
-#     def forward(self, inputs, targets, smooth=1):
-        
-#         #comment out if your model contains a sigmoid or equivalent activation layer
-#         # inputs = F.sigmoid(inputs)       
-        
-#         #flatten label and prediction tensors
-#         inputs = inputs.view(-1)
-#         targets = targets.view(-1)
-        
-#         intersection = (inputs * targets).sum()                            
-#         dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
-        
-#         return 1 - dice
-
-
-
 class DiceLoss(nn.Module):
     def __init__(self, smooth=1e-6):
         super(DiceLoss, self).__init__()
@@ -82,8 +58,6 @@ class DiceLoss(nn.Module):
         dice = 1 - (2 * intersection + self.smooth) / (sum_of_squares_pred + sum_of_squares_true + self.smooth)
         loss = torch.mean(dice)
         return loss
-    
-
 
 class DiceBCELoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
@@ -103,12 +77,8 @@ class DiceBCELoss(nn.Module):
         BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
         Dice_BCE = BCE + dice_loss
         print(f"BCE: {BCE}, DICE: {dice_loss}")
-        return Dice_BCE
-    
+        return Dice_BCE    
 
-
-
-#PyTorch
 class IoULoss(nn.Module):
     def __init__(self, weight=None, size_average=True):
         super(IoULoss, self).__init__()
@@ -132,26 +102,28 @@ class IoULoss(nn.Module):
                 
         return 1 - IoU
 
-# class BCEDiceLoss(nn.Module):
-#     def __init__(self, bce_weight=1.0, weight=None, size_average=True):
-#         super(BCEDiceLoss, self).__init__()
-#         self.bce_weight = bce_weight
-#         self.bce_loss = nn.BCEWithLogitsLoss(weight=weight, size_average=size_average)
+class FocalLoss(nn.Module):
+    def __init__(self, gamma=2, alpha=0.25):
+        super(FocalLoss, self).__init__()
+        self.loss_fn = nn.BCEWithLogitsLoss()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = self.loss_fn.reduction  # mean, sum, etc..
 
-#     def forward(self, logits, targets):
-#         # 이진 교차 엔트로피 손실 계산
-#         bce_loss = self.bce_loss(logits, targets)
+    def forward(self, pred, true):
+        bceloss = self.loss_fn(pred, true)
 
-#         # 소프트맥스 함수를 사용하여 확률을 얻음
-#         probs = F.softmax(logits, dim=1)
+        # pred_prob = torch.sigmoid(pred)  # p  pt는 p가 true 이면 pt = p / false 이면 pt = 1 - p
+        alpha_factor = true * self.alpha + (1-true) * (1 - self.alpha)  # add balance
+        modulating_factor = torch.abs(true - pred) ** self.gamma  # focal term
+        loss = alpha_factor * modulating_factor * bceloss  # bceloss에 이미 음수가 들어가 있음
 
-#         # 각 클래스에 대한 Dice Loss 계산
-#         intersection = torch.sum(probs * targets, dim=(2, 3))
-#         union = torch.sum(probs + targets, dim=(2, 3))
-#         dice_loss = 1.0 - (2.0 * intersection + 1.0) / (union + 1.0)
+        if self.reduction == 'mean':
+            return loss.mean()
         
-#         # BCELoss - log(Dice Loss)로 전체 손실 계산
-#         # bce_dice_loss = bce_loss - torch.log(dice_loss + 1e-5)
-#         bce_dice_loss = self.bce_weight * bce_loss + (1 - self.bce_weight) * dice_loss
- 
-#         return bce_dice_loss, dice_loss
+        elif self.reduction == 'sum':
+            return loss.sum()
+        
+        else:  # 'none'
+            return loss
+        
