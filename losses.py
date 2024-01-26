@@ -101,29 +101,23 @@ class IoULoss(nn.Module):
         IoU = (intersection + smooth)/(union + smooth)
                 
         return 1 - IoU
-
+        
 class FocalLoss(nn.Module):
-    def __init__(self, gamma=2, alpha=0.25):
+    def __init__(self, alpha=1, gamma=2, logits=False, reduce=True):
         super(FocalLoss, self).__init__()
-        self.loss_fn = nn.BCEWithLogitsLoss()
-        self.gamma = gamma
         self.alpha = alpha
-        self.reduction = self.loss_fn.reduction  # mean, sum, etc..
+        self.gamma = gamma
+        self.logits = logits
+        self.reduce = reduce
 
-    def forward(self, pred, true):
-        bceloss = self.loss_fn(pred, true)
+    def forward(self, inputs, targets):
+        ce_loss = nn.CrossEntropyLoss(reduction='none')(inputs, targets)
 
-        # pred_prob = torch.sigmoid(pred)  # p  pt는 p가 true 이면 pt = p / false 이면 pt = 1 - p
-        alpha_factor = true * self.alpha + (1-true) * (1 - self.alpha)  # add balance
-        modulating_factor = torch.abs(true - pred) ** self.gamma  # focal term
-        loss = alpha_factor * modulating_factor * bceloss  # bceloss에 이미 음수가 들어가 있음
+        pt = torch.exp(-ce_loss)
+        F_loss = self.alpha * (1-pt)**self.gamma * ce_loss
 
-        if self.reduction == 'mean':
-            return loss.mean()
-        
-        elif self.reduction == 'sum':
-            return loss.sum()
-        
-        else:  # 'none'
-            return loss
+        if self.reduce:
+            return torch.mean(F_loss)
+        else:
+            return F_loss
         
