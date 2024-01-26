@@ -32,7 +32,6 @@
     
 ### Results
 
-
 Method                   | Best Epoch | Loss | Jaccard(IoU) | F1-score 
 ------------------------ | ---------- | ---- | ------------ | -------- 
 ResNet34 + U-Net         | 47         | BCE  | 0.8159       | 0.8971 
@@ -44,13 +43,28 @@ Densenet121 + UNET       | 00         | BCE  | 0.0          | 0.0
 DUCK-NET(2024 SOTA)      | 00         | BCE  | 0.0          | 0.0 
 
 
+* DUCK-NET PARAMETERS
+
+    <small>------------------------------------------</small>  
+    <small>Total params: 22,911,216</small>  
+    <small>Trainable params: 22,911,216</small>  
+    <small>Non-trainable params: 0</small>  
+    <small>------------------------------------------</small>  
+    <small>Input size (MB): 1.00</small>  
+    <small>Forward/backward pass size (MB): 10187.50</small>  
+    <small>Params size (MB): 87.40</small>  
+    <small>Estimated Total Size (MB): 10275.90</small>  
+    <small>------------------------------------------</small>  
+
 ### Futher study
-    - apply class weight
-    - change Loss function (completed)
-    - change Model architecture
+    - Apply class weight (completed)
+    - Change Loss function (completed)
+    - Change Model architecture
         - Encoder : densenet121, mit_b0 (Mixed ViT)
         - Decoder : Unet++ (completed)
     - Apply Attention layer in Decoder blocks (completed)
+    - DUCK-NET (SOTA model) Experiment
+    - Change split method
 
 ### Post-hoc Analysis
     - label comparison
