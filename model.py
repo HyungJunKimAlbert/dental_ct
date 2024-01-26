@@ -138,7 +138,7 @@ class ConvBlock(nn.Module):
         output = self.conv(x)
 
         return output
-
+ 
 class UpConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -265,3 +265,332 @@ class AttentionUNet(nn.Module):
 
 
 
+
+
+# 03. DUCK-NET (https://arxiv.org/pdf/2311.02239.pdf)
+
+# Convoultion Block
+class conv_block_2D(nn.Module):
+    def __init__(self, filters, block_type, repeat=1, dilation_rate=1, size=3, padding='same', half_channel=False):
+        super(conv_block_2D, self).__init__()
+
+        self.conv_block = nn.ModuleList()
+        self.half_channel = half_channel
+        self.filters = filters
+        
+        for i in range(0, repeat):
+            if i == 1:
+                if self.half_channel:
+                    self.filters = int(self.filters/2)
+                    
+                self.half_channel = False
+
+            if block_type == 'separated':
+                self.conv_block.append(
+                    separated_conv2D_block(self.filters, size=size, padding=padding, half_channel=self.half_channel)
+                )
+            elif block_type == 'duckv2':
+                self.conv_block.append(
+                    duckv2_conv2D_block(self.filters, size=size, half_channel=self.half_channel)
+                    )
+                
+            elif block_type == 'midscope':
+                self.conv_block.append(
+                    midscope_conv2D_block(self.filters, half_channel=self.half_channel)
+                )
+            elif block_type == 'widescope':
+                self.conv_block.append(
+                    widescope_conv2D_block(self.filters, half_channel=self.half_channel)
+                )           
+            elif block_type == 'resnet':
+                self.conv_block.append(
+                    resnet_conv2D_block(self.filters, self.half_channel, dilation_rate)
+                )
+            elif block_type == 'conv':
+                self.conv_block.append(
+                    nn.Conv2d(in_channels=self.filters, out_channels=self.filters, kernel_size=size, padding=padding)
+                )
+                self.conv_block.append(nn.ReLU())
+            elif block_type == 'double_convolution':
+                self.conv_block.append(
+                    double_convolution_with_batch_normalization(self.filters, dilation_rate)
+                )
+            else:
+                print('HERE')
+                return None
+    def forward(self, x):
+        for i in range(len(self.conv_block)):
+            x = self.conv_block[i](x)
+        
+        return x
+
+class separated_conv2D_block(nn.Module):
+    def __init__(self, filters, half_channel, size=3, padding='same'):
+        super(separated_conv2D_block, self).__init__()
+
+        if half_channel:
+            self.out_channel = int(filters/2)
+        else:
+            self.out_channel = filters
+        
+        self.conv_block = nn.Sequential( 
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=(1, size), padding=padding),
+            nn.BatchNorm2d(self.out_channel), 
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=(size,1), padding=padding),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU()
+        )
+
+    def forward(self, x):
+        output = self.conv_block(x)
+        return output
+
+# DUCK Block
+class duckv2_conv2D_block(nn.Module):
+    def __init__(self, filters, half_channel, size, padding='same'):
+        super(duckv2_conv2D_block, self).__init__()
+        self.filters = filters
+
+        if half_channel:
+            self.filters = int(filters/2)
+
+        self.x_0 = nn.BatchNorm2d(filters)
+        self.x_1 = widescope_conv2D_block(filters, half_channel=half_channel)
+        self.x_2 = midscope_conv2D_block(filters, half_channel=half_channel)
+        self.x_3 = conv_block_2D(filters, 'resnet', repeat=1, half_channel=half_channel)
+        self.x_4 = conv_block_2D(filters, 'resnet', repeat=2, half_channel=half_channel)
+        self.x_5 = conv_block_2D(filters, 'resnet', repeat=3, half_channel=half_channel)
+        self.x_6 = separated_conv2D_block(filters, size=6, padding='same', half_channel=half_channel)
+        self.x_7 = nn.BatchNorm2d(self.filters)
+
+    def forward(self, x):
+        x = self.x_0(x)     # BN
+        x1 = self.x_1(x)
+        x2 = self.x_2(x)
+        x3 = self.x_3(x)
+        x4 = self.x_4(x)
+        x5 = self.x_5(x)
+        x6 = self.x_6(x)
+
+        x = x1 + x2 + x3 + x4 + x5 + x6
+        output = self.x_7(x) 
+        
+        return output
+
+# Mid Scope Block
+class midscope_conv2D_block(nn.Module):
+    def __init__(self, filters, half_channel):
+        super(midscope_conv2D_block, self).__init__()
+        
+        if half_channel:
+            self.out_channel = int(filters/2)
+        else:
+            self.out_channel = filters
+
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=1),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=2),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU()
+        )
+    def forward(self, x):
+        output = self.conv_block(x)
+
+        return output
+
+# Wide Scope Block
+class widescope_conv2D_block(nn.Module):
+    def __init__(self, filters, half_channel):
+        super(widescope_conv2D_block, self).__init__()
+        
+        if half_channel:
+            self.out_channel = int(filters/2)
+        else:
+            self.out_channel = filters
+
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=1),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=2),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=3),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU()            
+        )
+    def forward(self, x):
+        output = self.conv_block(x)
+
+        return output
+
+# Residual Block
+class resnet_conv2D_block(nn.Module):
+    def __init__(self, filters, half_channel, dilation_rate):
+        super(resnet_conv2D_block, self).__init__()
+
+        if half_channel:
+            self.out_channel = int(filters/2)
+        else:
+            self.out_channel = filters
+        
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=1, padding='same', dilation=dilation_rate),
+            nn.ReLU()
+        )   # residual layer
+
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=1, padding='same', dilation=dilation_rate),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=dilation_rate),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU()
+        )   # convolution layer
+
+        self.conv_final = nn.BatchNorm2d(self.out_channel)
+
+    def forward(self, x):
+        x1 = self.conv_block1(x)
+        
+        x = self.conv_block2(x)
+        output = x + x1
+        output = self.conv_final(output)
+
+        return output
+
+
+
+class double_convolution_with_batch_normalization(nn.Module):
+    def __init__(self, filters, half_channel, dilation_rate):
+        super(double_convolution_with_batch_normalization, self).__init__()
+
+        if half_channel:
+            self.out_channel = int(filters/2)
+        else:
+            self.out_channel = filters
+
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(in_channels=filters, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=dilation_rate),
+            nn.Batchnorm2d(self.out_channel),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=self.out_channel, out_channels=self.out_channel, kernel_size=3, padding='same', dilation=dilation_rate),
+            nn.BatchNorm2d(self.out_channel),
+            nn.ReLU(),
+        )
+
+    def forward(self, x):
+        output = self.conv_block(x)
+
+        return output
+
+
+
+class DuckNet(nn.Module):
+    def __init__(self, starting_filters):
+        super(DuckNet, self).__init__()
+
+        # Down Sampling
+        self.change_channels = nn.Conv2d(in_channels=1, out_channels=starting_filters, kernel_size=1, stride=1)
+        self.downsample_1 = nn.Conv2d(in_channels=starting_filters, out_channels=starting_filters*2, kernel_size=2, stride=2)
+        self.downsample_2 = nn.Conv2d(in_channels=starting_filters*2, out_channels=starting_filters*4, kernel_size=2, stride=2)
+        self.downsample_3 = nn.Conv2d(in_channels=starting_filters*4, out_channels=starting_filters*8, kernel_size=2, stride=2)
+        self.downsample_4 = nn.Conv2d(in_channels=starting_filters*8, out_channels=starting_filters*16, kernel_size=2, stride=2)
+        self.downsample_5 = nn.Conv2d(in_channels=starting_filters*16, out_channels=starting_filters*32, kernel_size=2, stride=2)
+        
+        # Down Duck Block
+        self.downduck_0 = conv_block_2D(starting_filters, block_type='duckv2')
+        self.downduck_1 = conv_block_2D(starting_filters*2, block_type='duckv2')
+        self.downduck_2 = conv_block_2D(starting_filters*4, block_type='duckv2')
+        self.downduck_3 = conv_block_2D(starting_filters*8, block_type='duckv2')
+        self.downduck_4 = conv_block_2D(starting_filters*16, block_type='duckv2')
+
+        # Down Sampling (Duck block)
+        self.downsample_d_1 = nn.Conv2d(in_channels=starting_filters, out_channels=starting_filters*2, kernel_size=2, stride=2)
+        self.downsample_d_2 = nn.Conv2d(in_channels=starting_filters*2, out_channels=starting_filters*4, kernel_size=2, stride=2)
+        self.downsample_d_3 = nn.Conv2d(in_channels=starting_filters*4, out_channels=starting_filters*8, kernel_size=2, stride=2)
+        self.downsample_d_4 = nn.Conv2d(in_channels=starting_filters*8, out_channels=starting_filters*16, kernel_size=2, stride=2)
+        self.downsample_d_5 = nn.Conv2d(in_channels=starting_filters*16, out_channels=starting_filters*32, kernel_size=2, stride=2)
+        
+        # Res Block
+        self.res_1 = conv_block_2D(starting_filters*32, block_type='resnet', repeat=2)
+        self.res_2 = conv_block_2D(starting_filters*32, block_type='resnet', repeat=2, half_channel=True)
+
+        # Up Duck Block
+        self.upduck_0 = conv_block_2D(starting_filters, 'duckv2', repeat=1)
+        self.upduck_1 = conv_block_2D(starting_filters*2, 'duckv2', repeat=1, half_channel=True)
+        self.upduck_2 = conv_block_2D(starting_filters*4, 'duckv2', repeat=1, half_channel=True)
+        self.upduck_3 = conv_block_2D(starting_filters*8, 'duckv2', repeat=1, half_channel=True)
+        self.upduck_4 = conv_block_2D(starting_filters*16, 'duckv2', repeat=1, half_channel=True)
+
+        self.output = nn.Conv2d(in_channels=starting_filters, out_channels=32, kernel_size=1, stride=1, padding='same')
+        self.softmax = nn.Softmax2d()
+
+    def forward(self, x):                   # Input shape: (1, 1, 256, 256) ==> (Batch, Channels, Height, Weight)
+        x = self.change_channels(x)
+
+    # Down sampling (Origin Image)
+        down_1 = self.downsample_1(x)
+        down_2 = self.downsample_2(down_1)
+        down_3 = self.downsample_3(down_2)
+        down_4 = self.downsample_4(down_3)
+        down_5 = self.downsample_5(down_4)
+
+    # Down sampling (Origin Image + Duck Block)
+        duck_0 = self.downduck_0(x)
+        # duck block down 1 (blue arrow in article)
+        down_d_1 = self.downsample_d_1(duck_0)
+        downadd_1 = down_1 + down_d_1  # down + duck down summation
+        downduck_1 = self.downduck_1(downadd_1)
+
+        # duck block down 2
+        down_d_2 = self.downsample_d_2(downduck_1)
+        downadd_2 = down_2 + down_d_2
+        downduck_2 = self.downduck_2(downadd_2)
+
+        # duck block down 3
+        down_d_3 = self.downsample_d_3(downduck_2)
+        downadd_3 = down_3 + down_d_3
+        downduck_3 = self.downduck_3(downadd_3)
+
+        # duck block down 4
+        down_d_4 = self.downsample_d_4(downduck_3)
+        downadd_4 = down_4 + down_d_4
+        downduck_4 = self.downduck_4(downadd_4)
+
+        # duck block down 5
+        down_d_5 = self.downsample_d_5(downduck_4)
+        downadd_5 = down_5 + down_d_5
+
+        # 2 res blocks (yellow arrow in article)
+        res_1 = self.res_1(downadd_5)
+        res_2 = self.res_2(res_1)
+
+    # Up sampling (Origin Image + Duck Block / Neareset)
+        up_4 = nn.Upsample(scale_factor=2, mode='nearest')(res_2)
+        upadd_4 = downduck_4 + up_4
+        upduck_4 = self.upduck_4(upadd_4)
+
+        up_3 = nn.Upsample(scale_factor=2, mode='nearest')(upduck_4)
+        upadd_3 = downduck_3 + up_3
+        upduck_3 = self.upduck_3(upadd_3)
+
+        up_2 = nn.Upsample(scale_factor=2, mode='nearest')(upduck_3)
+        upadd_2 = downduck_2 + up_2
+        upduck_2 = self.upduck_2(upadd_2)
+
+        up_1 = nn.Upsample(scale_factor=2, mode='nearest')(upduck_2)
+        upadd_1 = downduck_1 + up_1
+        upduck_1 = self.upduck_1(upadd_1)
+
+        up_0 = nn.Upsample(scale_factor=2, mode='nearest')(upduck_1)
+        upadd_0 = duck_0 + up_0
+        upduck_0 = self.upduck_0(upadd_0)
+
+        output = self.output(upduck_0)
+        output = self.softmax(output)
+        return output
+    
