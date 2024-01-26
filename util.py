@@ -3,11 +3,13 @@ from glob import glob
 import nibabel as nib
 import pandas as pd
 import numpy as np
+from copy import deepcopy
 
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
+from sklearn.metrics import precision_score, recall_score, confusion_matrix
 
 def get_file_row_nii(file_paths):
     """Produces ID of a patient, image and mask filenames from a particular path"""
@@ -60,9 +62,9 @@ def save(ckpt_dir, model, optim, epoch, iou, f1):
     """
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    torch.save({'model': model.state_dict(),
-                'optim': optim.state_dict()},
-                f"{ckpt_dir}/epoch_{epoch}_iou{round(iou,2)}_f1{round(f1,2)}.pth")
+    torch.save({'model': deepcopy(model.state_dict()),
+                'optim': deepcopy(optim.state_dict())},
+                f"{ckpt_dir}/epoch_{epoch}_iou{round(iou,4)}_f1{round(f1,4)}.pth")
 
 def load(ckpt_dir, model, optim):
     """
@@ -112,6 +114,7 @@ def cal_metrics(preds, target, threshold=0.5):
     """
     preds_binary = (preds > threshold).astype(np.float32)
     preds_binary, target = torch.tensor(preds_binary), torch.tensor(target)
+    target = (target >= threshold).float()
 
     # F1
     f1 = BinaryF1Score()
@@ -121,3 +124,34 @@ def cal_metrics(preds, target, threshold=0.5):
     iou_score = IoU(preds_binary, target)    
 
     return f1_score, iou_score
+
+
+
+def cal_metrics_test(preds, target, threshold=0.5):
+    """
+        Calculate DL metrics
+
+        Parameters:
+            preds (numpy array): model prediction results
+            target (numpy array): ground truth
+            threshold (float): threhold 
+        Returns:
+            F1 score, Iou score, Precision, Recall, Sensitivity, Specificity
+    """
+    preds_binary = (preds > threshold).astype(np.float32)
+    preds_binary, target = torch.tensor(preds_binary), torch.tensor(target)
+    preds_flatten, target_flatten = preds_binary.flatten(), target.flatten()
+
+    # F1
+    f1 = BinaryF1Score()
+    f1_score = f1(preds_binary, target)
+    # IoU
+    IoU = BinaryJaccardIndex()
+    iou_score = IoU(preds_binary, target)    
+
+    # Precision
+    prec = precision_score(target_flatten, preds_flatten)
+    # Recall
+    rec = recall_score(target_flatten, preds_flatten)
+
+    return f1_score, iou_score, prec, rec
