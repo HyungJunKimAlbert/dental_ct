@@ -18,8 +18,8 @@ from sklearn.model_selection import train_test_split
 # Customized function
 from dataset.dataset import NiiDataset
 from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
-from models.model import UNet, AttentionUNet
-from losses.losses import DiceLoss, DiceBCELoss, IoULoss, FocalLoss
+from models.model import UNet, AttentionUNet,DuckNet
+# from losses.losses import DiceLoss, DiceBCELoss, IoULoss, FocalLoss
 
 
 def set_args():
@@ -30,7 +30,7 @@ def set_args():
     parser.add_argument("--num_epoch", default=50, type=int, dest='num_epoch')
     parser.add_argument('--classes', default=32, type=int,  dest='classes')
 
-    parser.add_argument("--data_dir", default="/home/hjkim/projects/Res_UNET/notebook/Data/nii", type=str, dest='data_dir')
+    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii", type=str, dest='data_dir')
     parser.add_argument("--ckpt_dir", default="./checkpoint", type=str, dest="ckpt_dir")
     parser.add_argument("--log_dir", default="./log", type=str, dest='log_dir')
     parser.add_argument("--result_dir", default="./result", type=str, dest="result_dir")
@@ -99,17 +99,6 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             output = to_numpy(output)            
 
             # concat 32 channels data (label, output) ==> for tensorboard image (concat all images vertically)
-            # for i in range(32):
-            #     tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
-            #     tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
-
-            #     if i == 0:
-            #         label_fn = tmp_label
-            #         output_fn = tmp_output
-            #     else:
-            #         label_fn = np.hstack((label_fn, tmp_label))
-            #         output_fn = np.hstack((output_fn, tmp_output))
-
             # output
             output_fn = output.copy()
             output_fn[output_fn<0.1] = 0
@@ -129,9 +118,9 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
             writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
 
-        np.save(f"{result_dst_path}/input_{epoch}ep.npy" ,input)
-        np.save(f"{result_dst_path}/label_{epoch}ep.npy" ,label)
-        np.save(f"{result_dst_path}/output_{epoch}ep.npy", output)
+        # np.save(f"{result_dst_path}/input_{epoch}ep.npy" ,input)
+        # np.save(f"{result_dst_path}/label_{epoch}ep.npy" ,label)
+        # np.save(f"{result_dst_path}/output_{epoch}ep.npy", output)
 
         avg_loss = np.mean(loss_arr)
         avg_iou = np.mean(iou_arr)
@@ -161,8 +150,6 @@ def main():
         transforms.Lambda(lambda x: (x - x.min()) / (x.max() - x.min()) if x.min() != x.max() else x),
         transforms.ToTensor(),
         transforms.Resize([IMAGE_SIZE, IMAGE_SIZE], interpolation=0),
-        # transforms.RandomRotation(10),
-        # transforms.RandomHorizontalFlip(),
     ]),
 
         'valid': transforms.Compose([
@@ -181,20 +168,22 @@ def main():
     lr = args.lr
     BATCH_SIZE = args.batch_size
     NUM_EPOCHS = args.num_epoch
+    FILTERS = 16
 
-    model = AttentionUNet().to(device) # Customized UNET with attention (activation : Softmax 2d)
+    model = DuckNet(FILTERS).to(device) # Customized UNET with attention (activation : Softmax 2d)
 
     # model = smp.Unet(     # UnetPlusPlus
-    # encoder_name="resnet34",  
+    # # encoder_name="resnet34",
+    # encoder_name="resnext50_32x4d",  
     # encoder_weights="imagenet",
     # in_channels=1,
     # activation='softmax2d',
     # classes=32).to(device)
 
     criterion = nn.BCELoss()
-    # criterion = DiceLoss()
+    # criterion = FocalLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
     mode = args.mode
     train_continue = args.train_continue
 
@@ -277,7 +266,7 @@ def main():
 
 if __name__ == '__main__':
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     main()
 
