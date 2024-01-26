@@ -1,151 +1,157 @@
-# Base Package
-import os, warnings
-import numpy as np, pandas as pd
-warnings.filterwarnings('ignore')
-# Torch
+import os, random
+from glob import glob
+import nibabel as nib
+import pandas as pd
+import numpy as np
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
-from tqdm import tqdm
-from torch.utils.data import DataLoader
-from torchvision import transforms, datasets
-from sklearn.model_selection import train_test_split
-import segmentation_models_pytorch as smp
-import torch.optim as optim
-import albumentations as A
+import torch.backends.cudnn as cudnn
+from torchmetrics.classification import BinaryF1Score, BinaryJaccardIndex
+from sklearn.metrics import precision_score, recall_score, confusion_matrix
 
-# parser
-import argparse
-# Customized function
-from dataset.dataset import NiiDataset
-from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
+def get_file_row_nii(file_paths):
+    """Produces ID of a patient, image and mask filenames from a particular path"""
+    file_paths = sorted(list(set(glob(f'{file_paths}/*.nii.gz')) - set(glob(f'{file_paths}/*_mask.nii.gz'))))
+    temp = []
+    for file in file_paths:
+        for i in range(0, len(nib.load(file).get_fdata().transpose())):
+            path = os.path.abspath(file)
+            path_no_ext, ext = "".join(path.split('.')[0]), ".".join(path.split('.')[1:])   # . 을 기준으로 파일명/확장자 분리
+            filename = os.path.basename(path)
+            patient_id = filename.split('.')[0]
+            temp.append([patient_id, path, f'{path_no_ext}_mask.{ext}', i])
 
-def set_args():
-    parser = argparse.ArgumentParser(description="Test Segmentation Model", 
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--batch_size", default=4, type=int, dest="batch_size")
-    parser.add_argument('--classes', default=32, type=int,  dest='classes')
-    parser.add_argument("--data_dir", default="/home/hjkim/projects/Res_UNET/notebook/Data/nii", type=str, dest='data_dir')
-    parser.add_argument("--model_dir", default="/home/hjkim/projects/Res_UNET/checkpoint/epoch_45_iou0.82_f10.9.pth", type=str, dest='model_dir')
+    filenames_df = pd.DataFrame(temp, columns=['Patient', 'image_filename', 'mask_filename','index'])
+    return filenames_df
 
-    return parser.parse_args()
+def to_numpy(x):
+    """
+    Converts a PyTorch tensor to a NumPy array and rearranges dimensions.
 
+    Args:
+        x (torch.Tensor): Input PyTorch tensor.
 
+    Returns:
+        np.ndarray: NumPy array with dimensions rearranged.
+    """
+    return x.to('cpu').detach().numpy().transpose(0, 2, 3, 1)
 
-def valid_one_epoch(model, data_loader, criterion, device):
-    model.eval()
-    loss_arr = []
-    iou_arr = []
-    f1_arr = []
-    with torch.no_grad():
-        for batch_idx, data in tqdm(enumerate(data_loader)):
-            input, label = data
-            input, label = input.to(device), label.to(device)
-            output = model(input)
-            loss = criterion(output, label)
+def denorm(x, mean, std):
+    """
+    Converts a PyTorch tensor to a NumPy array and rearranges dimensions.
 
-            loss_arr += [loss.item()] # Mean value (total 32 channels)
+    Args:
+        x (torch.Tensor): Input PyTorch tensor.
 
-            # For Tensorboard
-            input = to_numpy(input)         # Batch, Height, Weight, Channels
-            label = to_numpy(label)   
-            output = to_numpy(output)            
+    Returns:
+        np.ndarray: NumPy array with dimensions rearranged.
+    """
 
-            # concat 32 channels data (label, output)
-            # for i in range(32):
-            #     tmp_label = np.expand_dims(label[:, :, :, i], axis=-1)
-            #     tmp_output = np.expand_dims(output[:, :, :, i], axis=-1)
+    return (x * std) + mean
 
-            #     if i == 0:
-            #         label_fn = tmp_label
-            #         output_fn = tmp_output
-            #     else:
-            #         label_fn = np.hstack((label_fn, tmp_label))
-            #         output_fn = np.hstack((output_fn, tmp_output))
+def save(ckpt_dir, model, optim, epoch, iou, f1):
+    """
+    Save torch model in check point directory.
+    Args: 
+        ckpt_dir (str): checkpoint directory path
+        model (torch model) : Pytorch model weights
+        optim (torch.optimizer): pytorch optimizer
+        epoch (int): train epoch        
+    """
+    os.makedirs(ckpt_dir, exist_ok=True)
 
-            # F1-score , IoU score
-            f1_score, iou_score = cal_metrics(output, label)
-            iou_arr += [iou_score.item()]     
-            f1_arr += [f1_score.item()]
+    torch.save({'model': deepcopy(model.state_dict()),
+                'optim': deepcopy(optim.state_dict())},
+                f"{ckpt_dir}/epoch_{epoch}_iou{round(iou,4)}_f1{round(f1,4)}.pth")
 
-        avg_loss = np.mean(loss_arr)
-        avg_iou = np.mean(iou_arr)
-        avg_f1 = np.mean(f1_arr)
-        
-    return avg_loss, avg_iou, avg_f1
-
-
-def main():
-
-# 0. Fix seed and Set args
-    SEED=42
-    IMAGE_SIZE = 256
-
-    seed_fix(SEED)
-    args = set_args()
-
-# 1. Define option
-    CLASSES = [f'Segment_{i}' for i in range(1, args.classes + 1)]
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-    # transforms method
-    transform = {
-        'valid': transforms.Compose([
-        transforms.Lambda(lambda x: (x - x.min()) / (x.max() - x.min()) if x.min() != x.max() else x),
-        transforms.ToTensor(),
-        transforms.Resize([IMAGE_SIZE, IMAGE_SIZE], interpolation=0),
-        ])
-    }
-
-    # Path define
-    model_dir = args.model_dir
-    # model parametersßß
-    BATCH_SIZE = args.batch_size
-
-    model = smp.UnetPlusPlus(     # UnetPlusPlus
-    encoder_name="resnet34",  
-    encoder_weights="imagenet",
-    in_channels=1,
-    activation='softmax2d',
-    classes=32).to(device)
-    # Optimizer
-    optimizer = torch.optim.Adam(model.parameters())
-
-    saved_checkpoint = torch.load(args.model_dir, map_location=device)
-    # model.load_state_dict(saved_checkpoint, strict=False)
-    # optimizer.load_state_dict(saved_checkpoint['optim'])
-    model.load_state_dict(saved_checkpoint['model'])
-    optimizer.load_state_dict(saved_checkpoint['optim'])
-
-    criterion = nn.BCELoss()
-    print(f"DEVICE: {device}")
-    print(f"model_dir: { model_dir }")
-
-# 3. Import dataset
-    files_df = get_file_row_nii(args.data_dir)
-    train_df, test_df = train_test_split(files_df, test_size=0.2, random_state=SEED)    # 8:2
-    valid_df, test_df = train_test_split(test_df, test_size=0.5, random_state=SEED)     # 5:5
+def load(ckpt_dir, model, optim):
+    """
+        Load torch model in check point directory.
+    """
+    if os.path.exists(ckpt_dir):
+        epoch = 0
+        return model, optim, epoch
     
-    # test_df = pd.read_csv("/home/hjkim/projects/Res_UNET/notebook/testset.csv", index_col=0)
-    # train_dataset = NiiDataset(train_df, transform=transform['train'], classes=CLASSES)
-    valid_dataset = NiiDataset(valid_df, transform=transform['valid'], classes=CLASSES)
-    test_dataset = NiiDataset(test_df, transform=transform['valid'], classes=CLASSES)
-    
-    # Loader
-    # train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    ckpt_lst = os.listdir(ckpt_dir)
+    ckpt_lst.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
 
-# 4. Start Evaluation
+    dict_model = torch.load(f"{ckpt_dir}/{ckpt_lst[-1]}")   # load laetset model
+    model.load_state_dict(dict_model['model'])
+    optim.load_state_dict(dict_model['optim'])
+    epoch = int(ckpt_lst[-1].split('epoch')[1].split('.pth')[0])
 
-    print(f"Test Total Batches: { len(valid_loader) }")
-    
-    print('Testing Processing....')
-    # avg_loss_test, avg_iou_test, avg_f1_test = valid_one_epoch(model, test_loader, criterion, device)
-    avg_loss_test, avg_iou_test, avg_f1_test = valid_one_epoch(model, valid_loader, criterion, device)
+    return model, optim, epoch
 
-    print(f"Test Loss: {avg_loss_test}, IoU: {avg_iou_test}, F1-score: {avg_f1_test}")
 
-if __name__ == '__main__':
+def seed_fix(SEED):
+    # Seed 
+    os.environ['SEED'] = str(SEED)
+    os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+    np.random.seed(SEED)
+    random.seed(SEED)
+    torch.manual_seed(SEED)
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+    torch.backends.cudnn.deterministic = True
+    np.random.seed(SEED)
+    cudnn.benchmark = False
+    cudnn.deterministic = True
+    random.seed(SEED)
 
-    main()
 
+def cal_metrics(preds, target, threshold=0.5):
+    """
+        Calculate DL metrics
+
+        Parameters:
+            preds (numpy array): model prediction results
+            target (numpy array): ground truth
+            threshold (float): threhold 
+        Returns:
+            F1 score, Iou score
+    """
+    preds_binary = (preds > threshold).astype(np.float32)
+    preds_binary, target = torch.tensor(preds_binary), torch.tensor(target)
+    target = (target >= threshold).float()
+
+    # F1
+    f1 = BinaryF1Score()
+    f1_score = f1(preds_binary, target)
+    # IoU
+    IoU = BinaryJaccardIndex()
+    iou_score = IoU(preds_binary, target)    
+
+    return f1_score, iou_score
+
+
+
+def cal_metrics_test(preds, target, threshold=0.5):
+    """
+        Calculate DL metrics
+
+        Parameters:
+            preds (numpy array): model prediction results
+            target (numpy array): ground truth
+            threshold (float): threhold 
+        Returns:
+            F1 score, Iou score, Precision, Recall, Sensitivity, Specificity
+    """
+    preds_binary = (preds > threshold).astype(np.float32)
+    preds_binary, target = torch.tensor(preds_binary), torch.tensor(target)
+    preds_flatten, target_flatten = preds_binary.flatten(), target.flatten()
+
+    # F1
+    f1 = BinaryF1Score()
+    f1_score = f1(preds_binary, target)
+    # IoU
+    IoU = BinaryJaccardIndex()
+    iou_score = IoU(preds_binary, target)    
+
+    # Precision
+    prec = precision_score(target_flatten, preds_flatten)
+    # Recall
+    rec = recall_score(target_flatten, preds_flatten)
+
+    return f1_score, iou_score, prec, rec
