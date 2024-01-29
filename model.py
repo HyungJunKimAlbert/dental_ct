@@ -593,4 +593,3 @@ class DuckNet(nn.Module):
         output = self.output(upduck_0)
         output = self.softmax(output)
         return output
-    
