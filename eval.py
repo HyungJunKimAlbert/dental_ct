@@ -19,6 +19,7 @@ import argparse
 from dataset.dataset import NiiDataset
 from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
 from models.model import AttentionUNet
+
 def set_args():
     parser = argparse.ArgumentParser(description="Test Segmentation Model", 
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -28,8 +29,6 @@ def set_args():
     parser.add_argument("--model_dir", default="/home/hjkim/projects/Res_UNET/checkpoint/Attn_UNET_bce/epoch_29_iou0.78_f10.87.pth", type=str, dest='model_dir')
 
     return parser.parse_args()
-
-
 
 def valid_one_epoch(model, data_loader, criterion, device):
     model.eval()
