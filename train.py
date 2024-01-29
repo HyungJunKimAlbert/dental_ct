@@ -1,5 +1,5 @@
 # Base Package
-import os, warnings
+import os, warnings, math
 import numpy as np
 warnings.filterwarnings('ignore')
 # Torch
@@ -30,7 +30,7 @@ def set_args():
     parser.add_argument("--num_epoch", default=50, type=int, dest='num_epoch')
     parser.add_argument('--classes', default=32, type=int,  dest='classes')
 
-    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii", type=str, dest='data_dir')
+    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii_origin", type=str, dest='data_dir')
     parser.add_argument("--ckpt_dir", default="./checkpoint", type=str, dest="ckpt_dir")
     parser.add_argument("--log_dir", default="./log", type=str, dest='log_dir')
     parser.add_argument("--result_dir", default="./result", type=str, dest="result_dir")
@@ -65,17 +65,21 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, writer_trai
         output = to_numpy(output)  
 
         # F1-score , IoU score
-        f1_score, iou_score = cal_metrics(output, label, threshold=0.5)
-        iou_arr += [iou_score.item()]     
-        f1_arr += [f1_score.item()]
+        try:
+            f1_score, iou_score = cal_metrics(output, label)
+            iou_arr += [iou_score.item()]     
+            f1_arr += [f1_score.item()]
+        except Exception as e:
+            print(e, type(e))
+            pass
 
         # writer_train.add_image('input', input, batch_idx, dataformats='NHWC')
         # writer_train.add_image('label', label_fn, batch_idx, dataformats='NHWC')
         # writer_train.add_image('output', output_fn, batch_idx, dataformats='NHWC')
-    
+
     avg_loss = np.mean(loss_arr)
-    avg_iou = np.mean(iou_arr)
-    avg_f1 = np.mean(f1_arr)
+    avg_iou = np.mean([x for x in iou_arr if math.isnan(x)!=True])
+    avg_f1 = np.mean([x for x in f1_arr if math.isnan(x)!=True])
         
     return avg_loss, avg_iou, avg_f1
 
@@ -110,21 +114,24 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             label_fn = np.concatenate([label_fn] * 3, axis=-1)
 
             # F1-score , IoU score
-            f1_score, iou_score = cal_metrics(output, label)
-            iou_arr += [iou_score.item()]     
-            f1_arr += [f1_score.item()]
+            try:
+                f1_score, iou_score = cal_metrics(output, label)
+                iou_arr += [iou_score.item()]     
+                f1_arr += [f1_score.item()]
+            except Exception as e:
+                print(e, type(e))
+                pass
 
             writer_valid.add_image('input', input, batch_idx, dataformats='NHWC')
             writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
             writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
-
         # np.save(f"{result_dst_path}/input_{epoch}ep.npy" ,input)
         # np.save(f"{result_dst_path}/label_{epoch}ep.npy" ,label)
         # np.save(f"{result_dst_path}/output_{epoch}ep.npy", output)
 
         avg_loss = np.mean(loss_arr)
-        avg_iou = np.mean(iou_arr)
-        avg_f1 = np.mean(f1_arr)
+        avg_iou = np.mean([x for x in iou_arr if math.isnan(x)!=True])
+        avg_f1 = np.mean([x for x in f1_arr if math.isnan(x)!=True])
         
     return avg_loss, avg_iou, avg_f1
 
@@ -196,9 +203,10 @@ def main():
 
 # 3. Import dataset
     files_df = get_file_row_nii(args.data_dir)
+
     train_df, test_df = train_test_split(files_df, test_size=0.2, random_state=SEED)    # 8:2
     valid_df, test_df = train_test_split(test_df, test_size=0.5, random_state=SEED)     # 5:5
-    
+
     train_dataset = NiiDataset(train_df, transform=transform['train'], classes=CLASSES)
     valid_dataset = NiiDataset(valid_df, transform=transform['valid'], classes=CLASSES)
     # test_dataset = NiiDataset(test_df, transform=transform['valid'], classes=CLASSES)
