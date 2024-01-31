@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter       # tensorboard --logdir="
 from sklearn.model_selection import train_test_split
 # Customized function
 from dataset.dataset import NiiDataset
-from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
+from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics, continue_training
 from models.model import UNet, AttentionUNet,DuckNet
 # from losses.losses import DiceLoss, DiceBCELoss, IoULoss, FocalLoss
 
@@ -30,7 +30,7 @@ def set_args():
     parser.add_argument("--num_epoch", default=50, type=int, dest='num_epoch')
     parser.add_argument('--classes', default=32, type=int,  dest='classes')
 
-    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii_origin", type=str, dest='data_dir')
+    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii", type=str, dest='data_dir')
     parser.add_argument("--ckpt_dir", default="./checkpoint", type=str, dest="ckpt_dir")
     parser.add_argument("--log_dir", default="./log", type=str, dest='log_dir')
     parser.add_argument("--result_dir", default="./result", type=str, dest="result_dir")
@@ -53,16 +53,14 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, writer_trai
 
         output = model(input)   # Output :torch.Size([4, 32, 512, 512]), Loss: torch.Size([4, 32])
         optimizer.zero_grad()
-        
+        # print(f"Batch Idx: {batch_idx+1}, Input: {input.shape}, Label: {label.shape}, Output: {output.shape}")
         loss = criterion(output, label) 
         
         loss_arr += [loss.item()] # Mean value (total 32 channels)
         loss.backward()
         optimizer.step()
-        # For Tensorboard
-        input = to_numpy(input)         # Batch, Height, Weight, Channels
-        label = to_numpy(label)   
-        output = to_numpy(output)  
+        # For Tensorboard & Metrics
+        input, label, output = to_numpy(input), to_numpy(label), to_numpy(output)         # Batch, Height, Weight, Channels
 
         # F1-score , IoU score
         try:
@@ -98,18 +96,15 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
             loss_arr += [loss.item()] # Mean value (total 32 channels)
 
             # For Tensorboard
-            input = to_numpy(input)         # Batch, Height, Weight, Channels
-            label = to_numpy(label)   
-            output = to_numpy(output)            
+            input, label, output = to_numpy(input), to_numpy(label), to_numpy(output)         # Batch, Height, Weight, Channels
 
             # concat 32 channels data (label, output) ==> for tensorboard image (concat all images vertically)
-            # output
-            output_fn = output.copy()
+            output_fn = output.copy()       # output
             output_fn[output_fn<0.1] = 0
             output_fn = output_fn.sum(axis=-1, keepdims=True)  # 32ch --> 3ch 
             output_fn = np.concatenate([output_fn] * 3, axis=-1)
-            # label
-            label_fn = label.copy()
+            
+            label_fn = label.copy()         # label
             label_fn = label_fn.sum(axis=-1, keepdims=True)   # 32ch --> 3ch 
             label_fn = np.concatenate([label_fn] * 3, axis=-1)
 
@@ -118,16 +113,14 @@ def valid_one_epoch(model, data_loader, criterion, device, writer_valid, epoch, 
                 f1_score, iou_score = cal_metrics(output, label)
                 iou_arr += [iou_score.item()]     
                 f1_arr += [f1_score.item()]
+
+                writer_valid.add_image('input', input, batch_idx, dataformats='NHWC')
+                writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
+                writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
+                
             except Exception as e:
                 print(e, type(e))
                 pass
-
-            writer_valid.add_image('input', input, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('label', label_fn, batch_idx, dataformats='NHWC')
-            writer_valid.add_image('output', output_fn, batch_idx, dataformats='NHWC')
-        # np.save(f"{result_dst_path}/input_{epoch}ep.npy" ,input)
-        # np.save(f"{result_dst_path}/label_{epoch}ep.npy" ,label)
-        # np.save(f"{result_dst_path}/output_{epoch}ep.npy", output)
 
         avg_loss = np.mean(loss_arr)
         avg_iou = np.mean([x for x in iou_arr if math.isnan(x)!=True])
@@ -218,8 +211,14 @@ def main():
 
     if mode == 'train': # TRAIN MODE
         ST_EPOCH = 0
-        if train_continue == "on": # load weights if you want to continue training
-            model, optim, ST_EPOCH = load(ckpt_dir=ckpt_dir, model=model, optim=optim)
+        global_f1 = 0.0
+
+        if train_continue == 'on':
+            ST_EPOCH = 18
+            model_path = os.path.join(ckpt_dir, "epoch_17_iou0.7854_f10.8716.pth")
+            model = continue_training(model, model_path, optimizer, device)
+            global_f1 = 0.8716
+            print(f"Model Loaded from [ { model_path } ]... Completed !")
 
 # 4. Start Training
                                       
@@ -227,21 +226,19 @@ def main():
         writer_train = SummaryWriter(log_dir = os.path.join(log_dir, 'train'))
         writer_valid = SummaryWriter(log_dir = os.path.join(log_dir, 'valid'))
 
-        global_f1 = 0.0
-
         print(f"Train Total Batches: { len(train_loader)  }, Valid Total Batches: { len(valid_loader) }")
 
         for epoch in range(ST_EPOCH+1, NUM_EPOCHS+1):
-            
             print('Training Processing....')
             avg_loss, avg_iou, avg_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device, writer_train)
+            print()
             print('Validation Processing...')
             avg_loss_valid, avg_iou_valid, avg_f1_valid = valid_one_epoch(model, valid_loader, criterion, device, writer_valid, epoch, result_dir)
             # Scheduler
             scheduler.step(avg_iou_valid)       # IoU 향상 없을 시,
             
             # train
-            writer_train.add_scalar('loss', avg_loss, epoch)               # Loss (DICE)
+            writer_train.add_scalar('loss', avg_loss, epoch)               # Loss (BCE)
             writer_train.add_scalar('IoU', avg_iou, epoch)                 # IoU
             writer_train.add_scalar('F1_score', avg_f1, epoch)             # F1 score
             
@@ -273,8 +270,8 @@ def main():
         writer_valid.close()
 
 if __name__ == '__main__':
-
-    os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+    
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     main()
 
