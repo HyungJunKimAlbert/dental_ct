@@ -17,7 +17,7 @@ def get_file_row_nii(file_paths):
     temp = []
     for file in file_paths:
         for i in range(0, len(nib.load(file).get_fdata().transpose())):
-            path = os.path.abspath(file)
+            path = os.path.abspath(file)    # "/home/hjkim/projects/local_dev/dental_ai/nii_origin/""
             path_no_ext, ext = "".join(path.split('.')[0]), ".".join(path.split('.')[1:])   # . 을 기준으로 파일명/확장자 분리
             filename = os.path.basename(path)
             patient_id = filename.split('.')[0]
@@ -25,6 +25,23 @@ def get_file_row_nii(file_paths):
 
     filenames_df = pd.DataFrame(temp, columns=['Patient', 'image_filename', 'mask_filename','index'])
     return filenames_df
+
+
+# def get_file_row_nii(file_paths):
+#     """Produces ID of a patient, image and mask filenames from a particular path"""
+#     file_paths = sorted(list(set(glob(f'{file_paths}/*.nii.gz')) - set(glob(f'{file_paths}/*_mask.nii.gz'))))
+#     temp = []
+#     for file in file_paths:
+#         for i in range(0, len(nib.load(file).get_fdata())):
+#             path = os.path.abspath(file)    # "/home/hjkim/projects/local_dev/dental_ai/nii_origin/""
+#             path_no_ext, ext = "".join(path.split('.')[0]), ".".join(path.split('.')[1:])   # . 을 기준으로 파일명/확장자 분리
+#             filename = os.path.basename(path)
+#             patient_id = filename.split('.')[0]
+#             temp.append([patient_id, path, f'{path_no_ext}_mask.{ext}', i])
+
+#     filenames_df = pd.DataFrame(temp, columns=['Patient', 'image_filename', 'mask_filename','index'])
+#     return filenames_df
+
 
 def to_numpy(x):
     """
@@ -62,9 +79,19 @@ def save(ckpt_dir, model, optim, epoch, iou, f1):
     """
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    torch.save({'model': deepcopy(model.state_dict()),
-                'optim': deepcopy(optim.state_dict())},
+    torch.save({'model': model.state_dict(),
+                'optim': optim.state_dict()},
                 f"{ckpt_dir}/epoch_{epoch}_iou{round(iou,4)}_f1{round(f1,4)}.pth")
+
+def continue_training(model, model_path, optimizer, device):
+    
+    saved_checkpoint = torch.load(model_path, map_location=device)
+    model.load_state_dict(saved_checkpoint['model'])
+    optimizer.load_state_dict(saved_checkpoint['optim'])
+    model = model.to(device)
+
+    return model
+
 
 def load(ckpt_dir, model, optim):
     """
@@ -113,8 +140,8 @@ def cal_metrics(preds, target, threshold=0.5):
             F1 score, Iou score
     """
     preds_binary = (preds > threshold).astype(np.float32)
-    preds_binary, target = torch.tensor(preds_binary), torch.tensor(target)
-    target = (target >= threshold).float()
+    preds_binary, target = torch.tensor(preds_binary, dtype=torch.float32), torch.tensor(target, dtype=torch.long)   # torch.long
+    # target = (target >= threshold).float()        
 
     # F1
     f1 = BinaryF1Score()
