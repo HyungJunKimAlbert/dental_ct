@@ -18,21 +18,22 @@ import argparse
 # Customized function
 from dataset.dataset import NiiDataset
 from utils.util import save, load, seed_fix, get_file_row_nii, to_numpy, cal_metrics
-from models.model import AttentionUNet
-
+from models.model import AttentionUNet, DuckNet
 def set_args():
     parser = argparse.ArgumentParser(description="Test Segmentation Model", 
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--batch_size", default=4, type=int, dest="batch_size")
     parser.add_argument('--classes', default=32, type=int,  dest='classes')
-    parser.add_argument("--data_dir", default="/home/hjkim/projects/Res_UNET/notebook/Data/nii", type=str, dest='data_dir')
-    parser.add_argument("--model_dir", default="/home/hjkim/projects/Res_UNET/checkpoint/Attn_UNET_bce/epoch_29_iou0.78_f10.87.pth", type=str, dest='model_dir')
+    parser.add_argument("--data_dir", default="/home/hjkim/projects/local_dev/dental_ai/nii", type=str, dest='data_dir')
+    parser.add_argument("--model_dir", default="/home/hjkim/projects/local_dev/dental_ai/checkpoint/epoch_17_iou0.7854_f10.8716.pth", type=str, dest='model_dir')
 
     return parser.parse_args()
 
+
+
 def valid_one_epoch(model, data_loader, criterion, device):
     model.eval()
-    loss_arr, iou_arr, f1_arr, prec_arr, rec_arr = [], [], [], [], []
+    loss_arr, iou_arr, f1_arr = [], [], []
 
     with torch.no_grad():
         for batch_idx, data in tqdm(enumerate(data_loader)):
@@ -49,17 +50,15 @@ def valid_one_epoch(model, data_loader, criterion, device):
             output = to_numpy(output)            
 
             # F1-score , IoU score
-            f1_score, iou_score, prec, rec, sensitivity, specificity = cal_metrics(output, label)
+            f1_score, iou_score = cal_metrics(output, label)
             iou_arr += [iou_score.item()]     
             f1_arr += [f1_score.item()]
-            prec_arr += [prec.item()]
-            rec_arr += [rec.item()]
 
         avg_loss = np.mean([x for x in loss_arr if math.isnan(x)!=True])
         avg_iou = np.mean([x for x in iou_arr if math.isnan(x)!=True])
         avg_f1 = np.mean([x for x in f1_arr if math.isnan(x)!=True])
 
-    return avg_loss, avg_iou, avg_f1, np.mean(prec_arr), np.mean(rec_arr)
+    return avg_loss, avg_iou, avg_f1
 
 
 def main():
@@ -95,7 +94,9 @@ def main():
     # in_channels=1,
     # activation='softmax2d',
     # classes=32).to(device)
-    model = AttentionUNet().to(device)
+    FILTERS = 16
+
+    model = DuckNet(FILTERS) # Customized UNET with attention (activation : Softmax 2d)
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters())
@@ -103,7 +104,8 @@ def main():
     saved_checkpoint = torch.load(args.model_dir, map_location=device)
     model.load_state_dict(saved_checkpoint['model'])
     optimizer.load_state_dict(saved_checkpoint['optim'])
-
+    model = model.to(device)
+    
     criterion = nn.BCELoss()
     print(f"DEVICE: {device}")
     print(f"model_dir: { model_dir }")
@@ -111,7 +113,7 @@ def main():
 # 3. Import dataset
     files_df = get_file_row_nii(args.data_dir)
     train_df, test_df = train_test_split(files_df, test_size=0.2, random_state=SEED)    # 8:2
-    valid_df, test_df = train_test_split(test_df, test_size=0.1, random_state=SEED)     # 5:5
+    valid_df, test_df = train_test_split(test_df, test_size=0.5, random_state=SEED)     # 5:5
     
     # test_df = pd.read_csv("/home/hjkim/projects/Res_UNET/notebook/testset.csv", index_col=0)
     test_dataset = NiiDataset(test_df, transform=transform['valid'], classes=CLASSES)
@@ -123,10 +125,9 @@ def main():
 
     print(f"Test Total Batches: { len(test_loader) }")
     print('Testing Processing....')
-    avg_loss_test, avg_iou_test, avg_f1_test, avg_prec, avg_rec = valid_one_epoch(model, test_loader, criterion, device)
-    print(f"Test Loss: {avg_loss_test}, IoU: {avg_iou_test}, F1-score: {avg_f1_test}, Precision: {avg_prec}, Recall: {avg_rec}")
+    avg_loss_test, avg_iou_test, avg_f1_test = valid_one_epoch(model, test_loader, criterion, device)
+    print(f"Test Loss: {avg_loss_test}, IoU: {avg_iou_test}, F1-score: {avg_f1_test}")
 
 if __name__ == '__main__':
 
     main()
-
