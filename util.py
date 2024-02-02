@@ -127,6 +127,20 @@ def seed_fix(SEED):
     cudnn.deterministic = True
     random.seed(SEED)
 
+def split_data(data, seed=42):
+    random.seed(seed)
+    # shuffle
+    shuffled_data = random.sample(data, len(data))
+    # train:valid:test = 8:1:1
+    total_length = len(shuffled_data)
+    train_length = int(0.8 * total_length)
+    val_length = int(0.1 * total_length)
+
+    train_data = shuffled_data[:train_length]
+    val_data = shuffled_data[train_length:train_length + val_length]
+    test_data = shuffled_data[train_length + val_length:]
+    
+    return train_data, val_data, test_data
 
 def cal_metrics(preds, target, threshold=0.5):
     """
@@ -140,8 +154,8 @@ def cal_metrics(preds, target, threshold=0.5):
             F1 score, Iou score
     """
     preds_binary = (preds > threshold).astype(np.float32)
-    preds_binary, target = torch.tensor(preds_binary, dtype=torch.float32), torch.tensor(target, dtype=torch.long)   # torch.long
-    # target = (target >= threshold).float()        
+    preds_binary, target = torch.tensor(preds_binary, dtype=torch.long), torch.tensor(target, dtype=torch.long)   # torch.long
+    target[target > 1] = 1
 
     # F1
     f1 = BinaryF1Score()
